@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import time
 import streamlit as st
@@ -6,7 +7,7 @@ from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="AI Master GS Revision & Mock Test App",
+    page_title="AI Master GS Revision & Test Platform",
     page_icon="🎯",
     layout="wide",
 )
@@ -34,10 +35,10 @@ def init_db():
 
 init_db()
 
-st.title("🎯 AI Master GS Revision & Test Platform")
+st.title("🎯 AI Master GS Revision & Test Platform (Bulletproof Edition)")
 st.markdown(
-    "Apne notes (Text, PDF, Images ya Camera) se **100% data coverage** ke"
-    " sath smart MCQs banayein. Bhasha wahi hogi jo aapka data dega!"
+    "Apne notes (Text, PDF, Images ya Camera) se smart MCQs banayein. Data"
+    " feeding ab bilkul aasan aur surakshit hai!"
 )
 
 # Sidebar for Input & Uploads
@@ -68,11 +69,11 @@ with st.sidebar:
     notes_text = st.text_area(
         "Apne GS ke notes yahan paste karein:",
         height=200,
-        placeholder="Yahan apna lamba ya chhota text likhein...",
+        placeholder="Yahan apna text likhein...",
     )
   elif upload_option == "PDF / Images Upload Karein":
     uploaded_files = st.file_uploader(
-        "Badi PDF ya kai saari Photos (JPG/PNG) select karein",
+        "PDF ya Photos (JPG/PNG) select karein",
         type=["pdf", "png", "jpg", "jpeg"],
         accept_multiple_files=True,
     )
@@ -80,15 +81,15 @@ with st.sidebar:
     camera_file = st.camera_input("Apne notes ki live photo khinchein")
 
   st.info(
-      "💡 Tip: Duplicate questions automatic filter ho jayenge. Aap jitna"
-      " chahein utna data feed kar sakte hain!"
+      "💡 Tip: Duplicate questions automatic filter ho jayenge. Chahe text ho"
+      " ya file, sabhi ke liye seamless feeding!"
   )
   build_bank_btn = st.button("🚀 Question Bank mein Sawal Jodein")
 
 
-# Function with auto-retry for 503 errors
-def call_gemini_with_retry(client, model, contents, config, max_retries=3):
-  delay = 3
+# Function with robust auto-retry for 503 / 429 errors
+def call_gemini_with_retry(client, model, contents, config, max_retries=5):
+  delay = 2
   for attempt in range(max_retries):
     try:
       return client.models.generate_content(
@@ -100,6 +101,7 @@ def call_gemini_with_retry(client, model, contents, config, max_retries=3):
           "503" in error_str
           or "UNAVAILABLE" in error_str
           or "high demand" in error_str
+          or "RESOURCE_EXHAUSTED" in error_str
       ):
         if attempt < max_retries - 1:
           time.sleep(delay)
@@ -122,16 +124,16 @@ if build_bank_btn:
     st.error("Kripya pehle camera se photo khinchein!")
   else:
     with st.spinner(
-        "AI aapke data ko gahrai se analyze kar raha hai aur original bhasha"
-        " mein MCQs bana raha hai..."
+        "AI aapke data ko analyze kar raha hai aur questions feed kar raha"
+        " hai..."
     ):
       try:
         client = genai.Client(api_key=api_key)
 
         prompt = f"""
-                You are an expert GS exam creator and educator. Thoroughly and exhaustively analyze ALL the provided study notes, documents, images, or camera captures. 
+                You are an expert GS exam creator and educator. Thoroughly analyze all the provided study notes, documents, text, images, or camera captures. 
                 CRITICAL INSTRUCTIONS:
-                1. 100% Comprehensive Coverage: Extract every single fact, date, concept, heading, table, and data point. Do not miss any information. Convert them into high-quality multiple-choice questions (MCQs).
+                1. Comprehensive Coverage: Extract every single fact, date, concept, heading, and data point. Convert them into high-quality multiple-choice questions (MCQs).
                 2. Language Matching (Strict): Detect the language of the source input. If the source text/notes are in Hindi, generate all questions, options, correct answers, and explanations strictly in HINDI. If they are in English, generate everything strictly in ENGLISH.
                 
                 Return ONLY a valid JSON array in this exact format, with no extra text or markdown wrapping outside JSON:
@@ -149,44 +151,52 @@ if build_bank_btn:
             max_output_tokens=8192, temperature=0.2
         )
 
-        contents_list = []
-        if upload_option == "PDF / Images Upload Karein":
+        response = None
+        if upload_option == "Text Paste Karein":
+          full_prompt = f"{prompt}\n\nNotes Text:\n{notes_text.strip()}"
+          response = call_gemini_with_retry(
+              client,
+              "gemini-2.5-flash",
+              full_prompt,
+              config=generation_config,
+          )
+        elif upload_option == "PDF / Images Upload Karein":
+          contents_list = []
           for file in uploaded_files:
             file_bytes = file.getvalue()
             mime_type = file.type
             contents_list.append(
                 types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
             )
-        elif upload_option == "Camera se Photo Khinchein":
-          cam_bytes = camera_file.getvalue()
-          contents_list.append(
-              types.Part.from_bytes(data=cam_bytes, mime_type="image/jpeg")
-          )
-
-        if contents_list:
           contents_list.append(prompt)
           response = call_gemini_with_retry(
-              client,
-              "gemini-3.6-flash",
-              contents_list,
-              config=generation_config,
+              client, "gemini-2.5-flash", contents_list, config=generation_config
           )
-        else:
-          full_prompt = f"{prompt}\n\nNotes:\n{notes_text[:100000]}"
+        elif upload_option == "Camera se Photo Khinchein":
+          cam_bytes = camera_file.getvalue()
+          contents_list = [
+              types.Part.from_bytes(data=cam_bytes, mime_type="image/jpeg"),
+              prompt,
+          ]
           response = call_gemini_with_retry(
-              client,
-              "gemini-3.6-flash",
-              full_prompt,
-              config=generation_config,
+              client, "gemini-2.5-flash", contents_list, config=generation_config
           )
 
-        text_resp = response.text.strip()
-        if text_resp.startswith("```json"):
-          text_resp = text_resp[7:]
-        if text_resp.endswith("```"):
-          text_resp = text_resp[:-3]
+        raw_text = response.text.strip()
 
-        questions_list = json.loads(text_resp.strip())
+        # Safe JSON extraction using regex to prevent formatting crashes
+        match = re.search(r"\[\s*\{.*\}\s*\]", raw_text, re.DOTALL)
+        if match:
+          json_str = match.group(0)
+        else:
+          json_str = raw_text
+
+        if json_str.startswith("```json"):
+          json_str = json_str[7:]
+        if json_str.endswith("```"):
+          json_str = json_str[:-3]
+
+        questions_list = json.loads(json_str.strip())
 
         # Save to SQLite Database using INSERT OR IGNORE (Anti-Duplicate)
         conn = sqlite3.connect(DB_FILE)
@@ -217,11 +227,14 @@ if build_bank_btn:
         )
       except json.JSONDecodeError:
         st.error(
-            "Error: Data bahut bada hone ke karan format beech mein cut gaya."
-            " Kripya thoda kam data ya ek-ek karke files upload karein."
+            "Error: AI response ka format parse karne mein dikkat aayi. Kripya"
+            " dobara koshish karein."
         )
       except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(
+            f"Error: {e}. (Server par load zyada ho sakta hai, kripya 1 minute"
+            " baad dobara koshish karein.)"
+        )
 
 # Check Database stats
 conn = sqlite3.connect(DB_FILE)
@@ -238,7 +251,7 @@ col1.metric("Bank mein Kul Prashn", total_q)
 col2.metric("Bache hue Naye Prashn", unasked_q)
 col3.metric("Puche ja chuke Prashn", total_q - unasked_q)
 
-# --- QUESTION BANK MANAGEMENT SECTION (View & Selective/Bulk Delete) ---
+# --- QUESTION BANK MANAGEMENT SECTION ---
 st.markdown("---")
 with st.expander(
     "📋 Question Bank Management (Sawal Dekhein, Ek-Ek Delete Karein ya Poora"
@@ -309,7 +322,6 @@ if start_test_btn:
   else:
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Fetch unasked questions randomly
     cursor.execute(
         "SELECT id, question, options, correct, explanation FROM questions WHERE"
         " asked = 0 ORDER BY RANDOM() LIMIT ?",
@@ -317,7 +329,6 @@ if start_test_btn:
     )
     rows = cursor.fetchall()
 
-    # If unasked questions are less than requested test size, reset asked status and pick remaining
     if len(rows) < test_size:
       cursor.execute("UPDATE questions SET asked = 0")
       conn.commit()
@@ -384,7 +395,6 @@ if st.session_state.current_test:
         ans_dict[q["id"]] = st.session_state.get(f"master_q_{q['id']}")
       st.session_state.final_answers = ans_dict
 
-      # Mark questions as asked in DB
       conn = sqlite3.connect(DB_FILE)
       cursor = conn.cursor()
       for q in test_q:
