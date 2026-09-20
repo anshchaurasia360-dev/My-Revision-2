@@ -156,7 +156,7 @@ if build_bank_btn:
           full_prompt = f"{prompt}\n\nNotes Text:\n{notes_text.strip()}"
           response = call_gemini_with_retry(
               client,
-              "gemini-2.5-flash",
+              "gemini-3.6-flash",
               full_prompt,
               config=generation_config,
           )
@@ -170,7 +170,7 @@ if build_bank_btn:
             )
           contents_list.append(prompt)
           response = call_gemini_with_retry(
-              client, "gemini-2.5-flash", contents_list, config=generation_config
+              client, "gemini-3.6-flash", contents_list, config=generation_config
           )
         elif upload_option == "Camera se Photo Khinchein":
           cam_bytes = camera_file.getvalue()
@@ -179,7 +179,7 @@ if build_bank_btn:
               prompt,
           ]
           response = call_gemini_with_retry(
-              client, "gemini-2.5-flash", contents_list, config=generation_config
+              client, "gemini-3.6-flash", contents_list, config=generation_config
           )
 
         raw_text = response.text.strip()
